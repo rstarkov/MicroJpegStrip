@@ -39,7 +39,7 @@ namespace MicroJpegStrip
                 try
                 {
                     var bytes = File.ReadAllBytes(arg);
-                    if (bytes.Length < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8)
+                    if (bytes.Length < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 /* start of image */)
                         throw new Exception("not a JPEG file");
                     int inp = 2;
                     int outp = 2;
@@ -51,11 +51,15 @@ namespace MicroJpegStrip
                             if (inp == bytes.Length - 1)
                                 throw new Exception("unexpected end of JPEG file");
                             byte next = bytes[inp + 1];
-                            if (next == 0xD9)
+                            if (next == 0xD9 /* end of image */)
                                 break;
-                            if (next == 0xC0 || next == 0xC4 || next == 0xDA || next == 0xDB || next == 0xDD)
+                            if (next == 0xC0 /* baseline dct */ || next == 0xC2 /* progressive dct */ || next == 0xC4 /* huffman table */ || next == 0xDB /* quantization table */ || next == 0xDA /* scan data */)
                                 wantedMarker = true;
-                            else if (next != 0)
+#if PRESERVE_RESTARTS
+                            else if (next == 0xDD /* restart interval */ || ((next & 0xD8) == 0xD8) /* restart */ )
+                                wantedMarker = true;
+#endif
+                            else if (next != 0) // 0xFF 0x00 is an escape sequence for 0xFF and not a marker
                                 wantedMarker = false;
                         }
                         if (wantedMarker)
