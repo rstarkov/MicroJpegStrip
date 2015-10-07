@@ -43,28 +43,49 @@ namespace MicroJpegStrip
                         throw new Exception("not a JPEG file");
                     int inp = 2;
                     int outp = 2;
-                    bool wantedMarker = false;
-                    while (inp < bytes.Length)
+                    while (true)
                     {
-                        if (bytes[inp] == 0xFF)
+                        if (inp >= bytes.Length - 1) // we're expecting a marker, which is 2 bytes long ...
+                            throw new Exception("unexpected end of JPEG file");
+                        if (bytes[inp] != 0xFF) // ... and starts with FF
+                            throw new Exception("invalid or unsupported JPEG file");
+
+                        byte next = bytes[inp + 1];
+
+                        if (next == 0xD9 /* end of image */)
+                            break;
+                        else if (next == 0xC0 /* baseline dct */ || next == 0xC2 /* progressive dct */ || next == 0xC4 /* huffman table */ || next == 0xDB /* quantization table */
+                            || next == 0xDD /* restart interval */ || next == 0xDA /* scan data */)
                         {
-                            if (inp == bytes.Length - 1)
-                                throw new Exception("unexpected end of JPEG file");
-                            byte next = bytes[inp + 1];
-                            if (next == 0xD9 /* end of image */)
-                                break;
-                            if (next == 0xC0 /* baseline dct */ || next == 0xC2 /* progressive dct */ || next == 0xC4 /* huffman table */ || next == 0xDB /* quantization table */ || next == 0xDA /* scan data */)
-                                wantedMarker = true;
-#if PRESERVE_RESTARTS
-                            else if (next == 0xDD /* restart interval */ || ((next & 0xD8) == 0xD8) /* restart */ )
-                                wantedMarker = true;
-#endif
-                            else if (next != 0) // 0xFF 0x00 is an escape sequence for 0xFF and not a marker
-                                wantedMarker = false;
+                            int length = 2 + (bytes[inp + 2] << 8) + bytes[inp + 3];
+                            Buffer.BlockCopy(bytes, inp, bytes, outp, length);
+                            inp += length;
+                            outp += length;
+
+                            if (next == 0xDA)
+                            {
+                                // This section is longer than its length field alone specifies. Knowing the length of the remaining data requires quite a bit of in-depth parsing.
+                                // Fortunately this data happens be one place that strictly follows the FF 00 escaping of FF bytes, allowing us to keep going until we find
+                                // an FF XX sequence that isn't FF 00 or a restart (FF D0..D7, which are also lengthless and copied as-is without interrupting the FF DA section).
+                                while (true)
+                                {
+                                    if (inp >= bytes.Length - 1) // all images must end with FF D9
+                                        throw new Exception("unexpected end of JPEG file");
+                                    if (bytes[inp] == 0xFF)
+                                        if (bytes[inp + 1] != 0 && ((bytes[inp + 1] & 0xF8) != 0xD0))
+                                            break; // exit the loop when a marker is encountered that isn't an FF 00 escape or an FF D0..D7 restart
+                                    bytes[outp++] = bytes[inp++];
+                                }
+                            }
                         }
-                        if (wantedMarker)
-                            bytes[outp++] = bytes[inp];
-                        inp++;
+                        else if (next == 0 || ((next & 0xF8) == 0xD0)) // FF 00 escapes and restarts are only expected inside section data
+                            throw new Exception("invalid or unsupported JPEG file");
+                        else // all other sections are skipped using the length specifier
+                        {
+                            if (inp >= bytes.Length - 3)
+                                throw new Exception("unexpected end of JPEG file");
+                            inp += 2 + (bytes[inp + 2] << 8) + bytes[inp + 3];
+                        }
                     }
                     string filename;
                     if (overwrite)
@@ -81,15 +102,11 @@ namespace MicroJpegStrip
                         }
                     using (var f = File.Open(filename, FileMode.Create, FileAccess.Write, FileShare.Read))
                     {
-#if NO_JFIF
-                        f.Write(bytes, 0, outp);
-#else
                         f.Write(bytes, 0, 2);
                         var app0 = new byte[] { /* app0 marker */ 0xFF, 0xE0, /* length */ 0, 16, /* "JFIF\0" */ 0x4A, 0x46, 0x49, 0x46, 0, /* v1.2 */ 1, 2, /* dpi units */ 1, /* dpiX & Y */ 0, 1, 0, 1, /* thumbX & Y */ 0, 0 };
                         f.Write(app0, 0, app0.Length);
                         f.Write(bytes, 2, outp - 2);
-#endif
-                        f.Write(new byte[] { 0xFF, 0xD9 }, 0, 2);
+                        f.Write(new byte[] { 0xFF, 0xD9 }, 0, 2); /* end of image marker */
                     }
                     Console.WriteLine("success");
                     errors--;
